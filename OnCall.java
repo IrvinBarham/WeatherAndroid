@@ -1,0 +1,247 @@
+package com.example.openweatherapp;
+
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.net.Uri;
+import android.os.Build;
+import android.util.Log;
+
+import androidx.annotation.RequiresApi;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import javax.net.ssl.HttpsURLConnection;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+
+public class OnCall implements Runnable {
+
+    private MainActivity mainActivity;
+    private double[] latLon;
+    private String unit;
+    private final String KEY = "4797309cd5ae6e9d21f2f7123d136cc8";
+
+    private String DATA_URL;
+    private static final String TAG = "WeatherAPI";
+    private static final String weatherURL = "https://api.openweathermap.org/data/2.5/onecall";
+
+    public OnCall(MainActivity mainActivity, double[] latLon, String unit) {
+        this.mainActivity = mainActivity;
+        this.latLon = new double[]{latLon[0], latLon[1]};
+        this.unit = unit;
+        /*DATA_URL = "https://api.openweathermap.org/data/2.5/onecall?lat="+
+                latLon[0]+"&lon="+latLon[1]+
+                "&units="+ unit +"&lang=en&exclude=minutely&appid=" + KEY;*/
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.O)
+    @Override
+    public void run() {
+        Uri.Builder buildURL = Uri.parse(weatherURL).buildUpon();
+        buildURL.appendQueryParameter("units", unit);
+        buildURL.appendQueryParameter("lat", String.format("%s", latLon[0]));
+        buildURL.appendQueryParameter("lon", String.format("%s", latLon[1]));
+        buildURL.appendQueryParameter("appid", KEY);
+
+        String urlToUse = buildURL.build().toString();
+
+        StringBuilder sb = new StringBuilder();
+        try {
+            URL url = new URL(urlToUse);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.connect();
+
+            if (conn.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                Log.d(TAG, "run: HTTP ResponseCode NOT OK: " + conn.getResponseCode() + " , " +conn.getResponseMessage());
+                handleResults(null);
+                return;
+            }
+
+            InputStream is = conn.getInputStream();
+            BufferedReader reader = new BufferedReader((new InputStreamReader(is)));
+
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append('\n');
+            }
+
+            reader.close();
+            is.close();
+
+            Log.d(TAG, "run: " + sb.toString());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        handleResults(sb.toString());
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.O)
+    private void handleResults(String s) {
+
+        if (s == null) {
+            Log.d(TAG, "handleResults: Failure in data download");
+            mainActivity.runOnUiThread(mainActivity::downloadFailed);
+            return;
+        }
+
+        final Weather weatherData = parseJSON(s);
+        mainActivity.runOnUiThread(() -> {
+            if (weatherData != null) {
+                mainActivity.updateData(weatherData);
+            }
+        });
+    }
+
+    private Weather parseJSON(String s) {
+        Weather weather = null;
+        try {
+            JSONObject jsonObject = new JSONObject(s);
+
+            double lat = jsonObject.getDouble("lat");
+            double lon = jsonObject.getDouble("lon");
+            String timezone = jsonObject.getString("timezone");
+            long timezoneOffset = jsonObject.getLong("timezone_offset");
+            Current current = null;
+            List<Hourly> hourly = new ArrayList<>();
+            ArrayList<Daily> daily = new ArrayList<>();
+
+            if (jsonObject.has("current")) {
+                JSONObject currentObj = jsonObject.getJSONObject("current");
+                JSONArray currentWeatherJsonArray = currentObj.getJSONArray("weather");
+
+                List<Weatherdata> currentWeatherdata = new ArrayList<>();
+                if (currentWeatherJsonArray.length() > 0) {
+                    JSONObject currentWeather = currentWeatherJsonArray.getJSONObject(0);
+                    Weatherdata weatherInfo = new Weatherdata(
+                            currentWeather.getInt("id"),
+                            currentWeather.getString("main"),
+                            currentWeather.getString("description"),
+                            currentWeather.getString("icon")
+                    );
+                    currentWeatherdata.add(weatherInfo);
+                }
+
+                current = new Current(
+                        currentObj.getLong("dt"),
+                        currentObj.getLong("sunrise"),
+                        currentObj.getLong("sunset"),
+                        currentObj.getInt("temp"),
+                        currentObj.getInt("feels_like"),
+                        currentObj.getInt("pressure"),
+                        currentObj.getInt("humidity"),
+                        currentObj.getInt("dew_point"),
+                        currentObj.getInt("uvi"),
+                        currentObj.getInt("clouds"),
+                        currentObj.getLong("visibility"),
+                        currentObj.getDouble("wind_speed"),
+                        currentObj.getDouble("wind_deg"),
+                        currentWeatherdata
+                );
+            }
+
+            if (jsonObject.has("hourly")) {
+                JSONArray hourlyJsonArray = jsonObject.getJSONArray("hourly");
+
+                for (int i = 0; i < hourlyJsonArray.length(); i++) {
+                    JSONObject jo = hourlyJsonArray.getJSONObject(i);
+                    JSONArray hourlyWeatherJsonArray = jo.getJSONArray("weather");
+
+                    List<Weatherdata> hourlyWeatherdata = new ArrayList<>();
+                    if (hourlyWeatherJsonArray.length() > 0) {
+                        JSONObject hourlyWeather = hourlyWeatherJsonArray.getJSONObject(0);
+                        Weatherdata weatherInfo = new Weatherdata(
+                                hourlyWeather.getInt("id"),
+                                hourlyWeather.getString("main"),
+                                hourlyWeather.getString("description"),
+                                hourlyWeather.getString("icon")
+                        );
+                        hourlyWeatherdata.add(weatherInfo);
+                    }
+
+                    Hourly h = new Hourly(
+                            jo.getLong("dt"),
+                            jo.getInt("temp"),
+                            hourlyWeatherdata,
+                            jo.getDouble("pop")
+                    );
+
+                    hourly.add(i, h);
+                }
+            }
+
+            if (jsonObject.has("daily")) {
+                JSONArray dailyJsonArray = jsonObject.getJSONArray("daily");
+
+                for (int i = 0; i < dailyJsonArray.length(); i++) {
+                    JSONObject jo = dailyJsonArray.getJSONObject(i);
+                    JSONArray dailyWeatherJsonArray = jo.getJSONArray("weather");
+
+                    List<Weatherdata> dailyWeatherdata = new ArrayList<>();
+                    if (dailyWeatherJsonArray.length() > 0) {
+                        JSONObject dailyWeather = dailyWeatherJsonArray.getJSONObject(0);
+                        Weatherdata weatherdata = new Weatherdata(
+                                dailyWeather.getInt("id"),
+                                dailyWeather.getString("main"),
+                                dailyWeather.getString("description"),
+                                dailyWeather.getString("icon")
+                        );
+                        dailyWeatherdata.add(weatherdata);
+                    }
+
+
+                    Forecast forecast = new Forecast();
+
+                    if (jo.has("temp")) {
+                        JSONObject j = jo.getJSONObject("temp");
+                        forecast = new Forecast (
+                                j.getInt("day"),
+                                j.getInt("min"),
+                                j.getInt("max"),
+                                j.getInt("night"),
+                                j.getInt("eve"),
+                                j.getInt("morn")
+                        );
+                    }
+
+                    Daily d = new Daily(
+                            jo.getLong("dt"),
+                            forecast,
+                            dailyWeatherdata,
+                            jo.getInt("pop"),
+                            jo.getInt("uvi")
+                    );
+
+                    daily.add(i, d);
+                }
+            }
+
+            weather = new Weather(
+                    lat,
+                    lon,
+                    timezone,
+                    timezoneOffset,
+                    current,
+                    hourly,
+                    daily
+            );
+
+            return weather;
+        } catch (Exception e) {
+            Log.d(TAG, "parseJSON: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return null;
+    }
+}
+}
